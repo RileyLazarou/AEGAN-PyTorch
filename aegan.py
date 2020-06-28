@@ -112,11 +112,11 @@ class Encoder(nn.Module):
         self.width = last_channels * np.prod(self.image_dims[1:]) // np.prod(self.strides)**2
         self.linear.append(nn.Linear(self.width, 128))
         if self.batchnorm:
-            self.conv.append(nn.BatchNorm1d(128))
+            self.linear.append(nn.BatchNorm1d(128))
         self.linear.append(leaky_relu)
         self.linear.append(nn.Linear(128, 128))
         if self.batchnorm:
-            self.conv.append(nn.BatchNorm1d(128))
+            self.linear.append(nn.BatchNorm1d(128))
         self.linear.append(leaky_relu)
         self.linear.append(nn.Linear(128, self.latent_dim))
 
