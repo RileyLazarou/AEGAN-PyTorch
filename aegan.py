@@ -11,7 +11,7 @@ from PIL import Image
 import numpy as np
 
 class Generator(nn.Module):
-    def __init__(self, channels, kernels, strides, initial_shape, latent_dim=100, batchnorm=True):
+    def __init__(self, channels, kernels, strides, upsample, initial_shape, latent_dim=100, batchnorm=True):
         """A generator for mapping a latent space to a sample space.
 
         The sample space for this generator is single-channel, 28x28 images
@@ -25,15 +25,18 @@ class Generator(nn.Module):
         self.channels = channels
         self.kernels = kernels
         self.strides = strides
+        self.upsample = upsample
         self.latent_dim = latent_dim
         self.initial_shape = initial_shape
         self.batchnorm = batchnorm
+        self.colourspace_dim = 16
         self._init_modules()
 
     def _init_modules(self):
         """Initialize the modules."""
-        self.projections = nn.ModuleList()
+        leaky_relu = nn.LeakyReLU()
 
+        self.projections = nn.ModuleList()
         self.projections.append(nn.Linear(
                 self.latent_dim,
                 np.prod(self.initial_shape),
@@ -41,32 +44,36 @@ class Generator(nn.Module):
         if self.batchnorm:
             self.projections.append(
                     nn.BatchNorm1d(np.prod(self.initial_shape)))
-        leaky_relu = nn.LeakyReLU()
         self.projections.append(leaky_relu)
 
         # Convolutions
         self.conv = nn.ModuleList()
         last_channels = self.initial_shape[0]
         for index in range(len(self.channels)):
-            padding = 2 if self.strides[index] == 1 else 1  # TODO: fix this
-            self.conv.append(nn.ConvTranspose2d(
+            self.conv.append(nn.Upsample(scale_factor=self.upsample[index]))
+            lpad = (self.kernels[index] - 1) // 2
+            rpad = self.kernels[index] // 2
+            self.conv.append(nn.ZeroPad2d((lpad, rpad, lpad, rpad)))
+            self.conv.append(nn.Conv2d(
                     in_channels=last_channels,
                     out_channels=self.channels[index],
                     kernel_size=self.kernels[index],
                     stride=self.strides[index],
-                    padding=padding,
+                    padding=0,
                     bias=False))
             last_channels = self.channels[index]
             if index + 1 != len(self.channels):
                 if self.batchnorm:
                     self.conv.append(nn.BatchNorm2d(self.channels[index]))
                 self.conv.append(leaky_relu)
-        else:
-            self.conv.append(nn.Tanh())
+            else:
+                self.conv.append(nn.Tanh())
+
 
     def forward(self, input_tensor):
         """Forward pass; map latent vectors to samples."""
         intermediate = input_tensor
+
         for module in self.projections:
             intermediate = module(intermediate)
 
@@ -122,7 +129,7 @@ class Encoder(nn.Module):
 
     def forward(self, input_tensor):
         """Forward pass; map latent vectors to samples."""
-        intermediate = input_tensor + torch.randn(input_tensor.size(), device=self.device) * 0.1
+        intermediate = input_tensor + torch.randn(input_tensor.size(), device=self.device) * 0.02
         for module in self.conv:
             intermediate = module(intermediate)
 
@@ -170,7 +177,7 @@ class DiscriminatorImage(nn.Module):
 
     def forward(self, input_tensor):
         """Forward pass; map latent vectors to samples."""
-        intermediate = input_tensor + torch.randn(input_tensor.size(), device=self.device) * 0.1
+        intermediate = input_tensor + torch.randn(input_tensor.size(), device=self.device) * 0.02
         for module in self.conv:
             intermediate = module(intermediate)
 
@@ -403,15 +410,20 @@ class AEGAN():
 
         self.criterion_gen = nn.BCELoss()
         self.criterion_recon_image = nn.L1Loss()
+        #self.criterion_recon_image = nn.MSELoss()
         self.criterion_recon_latent = nn.MSELoss()
         self.optim_di = optim.Adam(self.discriminator_image.parameters(),
-                                   lr=1e-3, betas=(0.5, 0.999))
+                                   lr=1e-3, betas=(0.5, 0.999),
+                                   weight_decay=1e-7)
         self.optim_dl = optim.Adam(self.discriminator_latent.parameters(),
-                                   lr=1e-3, betas=(0.5, 0.999))
+                                   lr=1e-3, betas=(0.5, 0.999),
+                                   weight_decay=1e-7)
         self.optim_g = optim.Adam(self.generator.parameters(),
-                                  lr=2e-4, betas=(0.5, 0.999))
+                                  lr=2e-4, betas=(0.5, 0.999),
+                                  weight_decay=1e-7)
         self.optim_e = optim.Adam(self.encoder.parameters(),
-                                  lr=2e-4, betas=(0.5, 0.999))
+                                  lr=2e-4, betas=(0.5, 0.999),
+                                  weight_decay=1e-7)
         self.target_ones = torch.ones((batch_size, 1), device=device)
         self.target_zeros = torch.zeros((batch_size, 1), device=device)
 
@@ -506,7 +518,7 @@ class AEGAN():
 
         return loss_images.item(), loss_latent.item()
 
-    def train_epoch(self, print_frequency=10, max_steps=0):
+    def train_epoch(self, print_frequency=1, max_steps=0):
         """Train both networks for one epoch and return the losses.
 
         Args:
@@ -515,6 +527,7 @@ class AEGAN():
                              to do the full epoch.
         """
         ldx, ldz, lgx, lgz, lrx, lrz = 0, 0, 0, 0, 0, 0
+        eps = 1e-9
         for batch, (real_samples, _) in enumerate(self.dataloader):
             real_samples = real_samples.to(self.device)
             ldx_, ldz_ = self.train_step_discriminators(real_samples)
@@ -527,12 +540,12 @@ class AEGAN():
             lrz += lrz_
             if print_frequency and (batch+1) % print_frequency == 0:
                 print(f"{batch+1}/{len(self.dataloader)}:"
-                      f" G={lgx / (batch+1):.3f},"
-                      f" E={lgz / (batch+1):.3f},"
-                      f" Dx={ldx / (batch+1):.3f},"
-                      f" Dz={ldz / (batch+1):.3f}",
-                      f" Rx={lrx / (batch+1):.3f}",
-                      f" Rz={lrz / (batch+1):.3f}",
+                      f" G={lgx / (eps + (batch+1) * self.alphas['discriminate_image']):.3f},"
+                      f" E={lgz / (eps + (batch+1) * self.alphas['discriminate_latent']):.3f},"
+                      f" Dx={ldx / (eps + (batch+1)):.3f},"
+                      f" Dz={ldz / (eps + (batch+1)):.3f}",
+                      f" Rx={lrx / (eps + (batch+1) * self.alphas['reconstruct_image']):.3f}",
+                      f" Rz={lrz / (eps + (batch+1) * self.alphas['reconstruct_latent']):.3f}",
                       end='\r',
                       flush=True)
             # if ldr_ > 90 or ldf_ > 90:
@@ -570,19 +583,23 @@ def main():
         os.makedirs("results/reconstructed")
     except:
         pass
+    root = os.path.join("..", "..", "..", "datasets", "celeba")
+    #root = os.path.join("..", "..", "..", "datasets", "anime_faces")
+    #root = os.path.join("data", "pokemon")
     batch_size = 32
-    latent_dim = 64
-    epochs = 100
+    latent_dim = 16
+    epochs = 1000
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     transform = tv.transforms.Compose([
-            tv.transforms.ColorJitter(hue=0.5),
+            #tv.transforms.ColorJitter(hue=0.5),
+            tv.transforms.CenterCrop(178),
             tv.transforms.RandomHorizontalFlip(p=0.5),
-            #tv.transforms.Resize(64),
+            tv.transforms.Resize((64, 64)),
             tv.transforms.ToTensor(),
             tv.transforms.Normalize((0.5, 0.5, 0.5,), (0.5, 0.5, 0.5,))
             ])
     dataset = ImageFolder(
-            root=os.path.join("data", "pokemon"),
+            root=root,
             transform=transform
             )
     dataloader = DataLoader(dataset,
@@ -601,14 +618,16 @@ def main():
 
     noise_fn = lambda x: torch.randn((x, latent_dim), device=device)
     test_noise = noise_fn(32)
-    gan = AEGAN(latent_dim, noise_fn, dataloader, "params/pokemon_96.json", device=device, batch_size=batch_size)
+    gan = AEGAN(latent_dim, noise_fn, dataloader, "params/anime_64.json", device=device, batch_size=batch_size)
     start = time()
-    for i in range(1000):
+    for i in range(epochs):
         print(f"Epoch {i+1}; Elapsed time = {int(time() - start)}s")
-        gan.train_epoch()
+        gan.train_epoch(max_steps=100)
 
         save_images(gan, test_noise, f"results/generated/gen.{i:04d}.png")
 
+        if not "encoder" in dir(gan):
+            continue
         with torch.no_grad():
             reconstructed = gan.generator(gan.encoder(test_ims.cuda())).cpu()
         reconstructed = tv.utils.make_grid(reconstructed, normalize=True)

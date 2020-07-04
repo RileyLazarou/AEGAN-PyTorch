@@ -1,0 +1,33 @@
+{
+  "image_dims": [3, 64, 64],
+  "generator": {
+    "channels": [1025, 512, 256, 128, 64, 64, 3],
+    "kernels": [4, 4, 4, 4, 4, 5, 1],
+    "strides": [1, 1, 1, 1, 1, 1, 1],
+    "upsample": [2, 2, 2, 2, 1, 1, 1],
+    "initial_shape": [512, 4, 4],
+    "batchnorm": true
+  },
+  "discriminator_image": {
+    "channels": [64, 128, 256, 512, 512],
+    "kernels": [3, 3, 3, 3, 3],
+    "strides": [1, 2, 2, 2, 2],
+    "batchnorm": true
+  },
+  "encoder": {
+    "channels": [64, 64, 128, 128, 128, 256],
+    "kernels": [3, 3, 3, 3, 3, 3],
+    "strides": [2, 2, 2, 2, 1, 1],
+    "batchnorm": true
+  },
+  "discriminator_latent": {
+    "widths": [128, 64, 32, 32],
+    "batchnorm": true
+  },
+  "alpha": {
+    "discriminate_image": 0.1,
+    "discriminate_latent": 0.1,
+    "reconstruct_image": 1,
+    "reconstruct_latent": 0.5
+  }
+}
